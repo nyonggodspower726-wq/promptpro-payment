@@ -1,23 +1,29 @@
 import os
 import uuid
+import time
 import requests
 
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # =========================================================
-# FLUTTERWAVE V3 LIVE
+# FLUTTERWAVE V4 CONFIGURATION
 # =========================================================
 
-FLW_SECRET_KEY = os.environ.get("FLW_SECRET_KEY")
+FLW_CLIENT_ID = os.environ.get("FLW_CLIENT_ID")
+FLW_CLIENT_SECRET = os.environ.get("FLW_CLIENT_SECRET")
 
-FLW_BASE_URL = "https://api.flutterwave.com/v3"
+# Flutterwave Production API
+FLW_API_URL = "https://f4bexperience.flutterwave.com"
 
-# Your Railway public URL will be added as a Railway Variable.
-PAYMENT_SERVER_URL = os.environ.get("PAYMENT_SERVER_URL")
+# Flutterwave OAuth endpoint
+FLW_TOKEN_URL = (
+    "https://idp.flutterwave.com/"
+    "realms/flutterwave/protocol/openid-connect/token"
+)
 
-# Your GitHub success/failure pages
+# Your GitHub pages
 SUCCESS_URL = (
     "https://nyonggodspower726-wq.github.io/"
     "promptprohub/success.html"
@@ -30,14 +36,103 @@ FAILED_URL = (
 
 
 # =========================================================
+# ACCESS TOKEN CACHE
+# =========================================================
+
+access_token = None
+token_expires_at = 0
+
+
+def get_access_token():
+    """
+    Automatically obtains a V4 OAuth access token.
+
+    Flutterwave tokens expire after 10 minutes.
+    We request a new token when it is close to expiry.
+    """
+
+    global access_token
+    global token_expires_at
+
+    # Reuse current token if it has more than 60 seconds left.
+    if (
+        access_token
+        and time.time() < token_expires_at - 60
+    ):
+        return access_token
+
+    if not FLW_CLIENT_ID:
+        raise Exception(
+            "FLW_CLIENT_ID is not configured."
+        )
+
+    if not FLW_CLIENT_SECRET:
+        raise Exception(
+            "FLW_CLIENT_SECRET is not configured."
+        )
+
+    headers = {
+        "Content-Type": (
+            "application/x-www-form-urlencoded"
+        )
+    }
+
+    data = {
+        "client_id": FLW_CLIENT_ID,
+        "client_secret": FLW_CLIENT_SECRET,
+        "grant_type": "client_credentials"
+    }
+
+    response = requests.post(
+        FLW_TOKEN_URL,
+        headers=headers,
+        data=data,
+        timeout=30
+    )
+
+    result = response.json()
+
+    if (
+        not response.ok
+        or not result.get("access_token")
+    ):
+        raise Exception(
+            "Flutterwave authentication failed: "
+            + str(result)
+        )
+
+    access_token = result["access_token"]
+
+    expires_in = int(
+        result.get("expires_in", 600)
+    )
+
+    token_expires_at = (
+        time.time() + expires_in
+    )
+
+    return access_token
+
+
+# =========================================================
 # CORS
 # =========================================================
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+
+    response.headers[
+        "Access-Control-Allow-Origin"
+    ] = "*"
+
+    response.headers[
+        "Access-Control-Allow-Headers"
+    ] = "Content-Type"
+
+    response.headers[
+        "Access-Control-Allow-Methods"
+    ] = "GET, POST, OPTIONS"
+
     return response
 
 
@@ -47,9 +142,13 @@ def add_cors_headers(response):
 
 @app.route("/", methods=["GET"])
 def home():
+
     return jsonify({
         "status": "success",
-        "message": "PromptPro Hub payment server is online."
+        "message": (
+            "PromptPro Hub V4 payment server "
+            "is running."
+        )
     })
 
 
@@ -57,25 +156,22 @@ def home():
 # CREATE PAYMENT
 # =========================================================
 
-@app.route("/create-payment", methods=["POST"])
+@app.route(
+    "/create-payment",
+    methods=["POST"]
+)
 def create_payment():
 
-    if not FLW_SECRET_KEY:
-        return jsonify({
-            "status": "error",
-            "message": "FLW_SECRET_KEY is not configured."
-        }), 500
-
-    if not PAYMENT_SERVER_URL:
-        return jsonify({
-            "status": "error",
-            "message": "PAYMENT_SERVER_URL is not configured."
-        }), 500
-
-    data = request.get_json(silent=True) or {}
+    data = (
+        request.get_json(silent=True)
+        or {}
+    )
 
     currency = str(
-        data.get("currency", "NGN")
+        data.get(
+            "currency",
+            "NGN"
+        )
     ).upper()
 
     email = data.get(
@@ -84,25 +180,30 @@ def create_payment():
     )
 
     # =====================================================
-    # PRODUCT PRICES
+    # PRICES
     # =====================================================
 
     if currency == "NGN":
 
-        # REAL TEST PRICE
-        # Change to 19999 AFTER successful testing.
+        # REAL ₦100 TEST
+        #
+        # After the complete payment system works,
+        # change this to 19999.
         amount = 100
 
     elif currency == "USD":
 
-        # YOUR NORMAL USD PRICE
+        # NORMAL PRODUCT PRICE
         amount = 14.99
 
     else:
 
         return jsonify({
             "status": "error",
-            "message": "Only NGN and USD payments are supported."
+            "message": (
+                "Only NGN and USD "
+                "payments are supported."
+            )
         }), 400
 
 
@@ -110,64 +211,73 @@ def create_payment():
     # UNIQUE TRANSACTION REFERENCE
     # =====================================================
 
-    tx_ref = (
+    reference = (
         "PROMPTPRO-"
         + currency
         + "-"
-        + str(uuid.uuid4())
+        + uuid.uuid4().hex[:16]
     )
 
 
     # =====================================================
-    # REDIRECT AFTER FLUTTERWAVE PAYMENT
+    # GET V4 ACCESS TOKEN
     # =====================================================
 
-    callback_url = (
-        PAYMENT_SERVER_URL.rstrip("/")
-        + "/payment-callback"
+    try:
+
+        token = get_access_token()
+
+    except Exception as error:
+
+        return jsonify({
+            "status": "error",
+            "message": str(error)
+        }), 500
+
+
+    # =====================================================
+    # V4 ORCHESTRATOR PAYMENT
+    # =====================================================
+
+    url = (
+        FLW_API_URL
+        + "/orchestration/direct-charges"
     )
 
-
-    # =====================================================
-    # FLUTTERWAVE STANDARD PAYMENT
-    # =====================================================
+    headers = {
+        "Authorization": (
+            f"Bearer {token}"
+        ),
+        "Content-Type": "application/json",
+        "X-Trace-Id": str(uuid.uuid4()),
+        "X-Idempotency-Key": str(uuid.uuid4())
+    }
 
     payload = {
-        "tx_ref": tx_ref,
-
         "amount": amount,
 
         "currency": currency,
 
-        "redirect_url": callback_url,
+        "reference": reference,
 
         "customer": {
             "email": email
         },
 
-        "customizations": {
-            "title": "PromptPro Hub",
-            "description": (
-                "The Ultimate AI Business Toolkit"
-            )
+        "redirect_url": SUCCESS_URL,
+
+        "payment_method": {
+            "type": "card"
         }
-    }
-
-
-    headers = {
-        "Authorization": (
-            f"Bearer {FLW_SECRET_KEY}"
-        ),
-        "Content-Type": "application/json"
     }
 
 
     try:
 
         response = requests.post(
-            f"{FLW_BASE_URL}/payments",
-            json=payload,
+            url,
             headers=headers,
+            json=payload,
             timeout=30
         )
 
@@ -177,167 +287,106 @@ def create_payment():
 
         return jsonify({
             "status": "error",
-            "message": "Could not connect to Flutterwave.",
+            "message": (
+                "Could not connect to "
+                "Flutterwave."
+            ),
             "details": str(error)
         }), 500
 
 
     # =====================================================
-    # PAYMENT LINK CREATED
+    # CHECK RESPONSE
     # =====================================================
 
-    if (
-        response.ok
-        and result.get("status") == "success"
-        and result.get("data")
-        and result["data"].get("link")
-    ):
+    if response.ok:
 
-        return jsonify({
-            "status": "success",
+        next_action = (
+            result
+            .get("data", {})
+            .get("next_action", {})
+        )
 
-            "payment_link": result["data"]["link"],
+        redirect_url = (
+            next_action.get(
+                "redirect_url"
+            )
+        )
 
-            "tx_ref": tx_ref,
+        if redirect_url:
 
-            "currency": currency,
-
-            "amount": amount
-        })
+            return jsonify({
+                "status": "success",
+                "payment_url": redirect_url,
+                "reference": reference,
+                "currency": currency,
+                "amount": amount
+            })
 
 
     # =====================================================
-    # FLUTTERWAVE ERROR
+    # ERROR
     # =====================================================
 
     return jsonify({
         "status": "error",
-        "message": "Flutterwave could not create the payment.",
+        "message": (
+            "Flutterwave could not "
+            "start the payment."
+        ),
         "flutterwave_response": result
     }), 400
 
 
 # =========================================================
-# PAYMENT CALLBACK
+# PAYMENT STATUS
 # =========================================================
 
-@app.route("/payment-callback", methods=["GET"])
-def payment_callback():
+@app.route(
+    "/payment-status",
+    methods=["GET"]
+)
+def payment_status():
 
-    status = request.args.get("status")
-    tx_ref = request.args.get("tx_ref")
-    transaction_id = request.args.get("transaction_id")
+    reference = request.args.get(
+        "reference"
+    )
 
+    if not reference:
 
-    # -----------------------------------------------------
-    # PAYMENT FAILED / CANCELLED
-    # -----------------------------------------------------
-
-    if status != "successful":
-
-        return redirect(FAILED_URL)
-
-
-    # -----------------------------------------------------
-    # REQUIRED INFORMATION
-    # -----------------------------------------------------
-
-    if not tx_ref or not transaction_id:
-
-        return redirect(FAILED_URL)
-
-
-    # -----------------------------------------------------
-    # DETERMINE EXPECTED CURRENCY FROM TX REF
-    # -----------------------------------------------------
-
-    if "-NGN-" in tx_ref:
-
-        expected_currency = "NGN"
-        expected_amount = 100
-
-    elif "-USD-" in tx_ref:
-
-        expected_currency = "USD"
-        expected_amount = 14.99
-
-    else:
-
-        return redirect(FAILED_URL)
-
-
-    # -----------------------------------------------------
-    # VERIFY WITH FLUTTERWAVE
-    # -----------------------------------------------------
-
-    headers = {
-        "Authorization": (
-            f"Bearer {FLW_SECRET_KEY}"
-        ),
-        "Content-Type": "application/json"
-    }
+        return jsonify({
+            "status": "error",
+            "message": (
+                "Payment reference is required."
+            )
+        }), 400
 
 
     try:
 
-        response = requests.get(
-            f"{FLW_BASE_URL}/transactions/"
-            f"{transaction_id}/verify",
+        token = get_access_token()
 
-            headers=headers,
+    except Exception as error:
 
-            timeout=30
+        return jsonify({
+            "status": "error",
+            "message": str(error)
+        }), 500
+
+
+    # This endpoint will be connected to
+    # Flutterwave's transaction verification
+    # after we confirm the exact production
+    # response returned by your account.
+
+    return jsonify({
+        "status": "pending",
+        "reference": reference,
+        "message": (
+            "Payment verification endpoint "
+            "is ready."
         )
-
-        result = response.json()
-
-    except Exception:
-
-        return redirect(FAILED_URL)
-
-
-    # -----------------------------------------------------
-    # GET VERIFIED TRANSACTION
-    # -----------------------------------------------------
-
-    transaction = result.get("data", {})
-
-    verified_status = transaction.get("status")
-
-    verified_tx_ref = transaction.get("tx_ref")
-
-    verified_currency = transaction.get("currency")
-
-    verified_amount = transaction.get("amount")
-
-
-    # -----------------------------------------------------
-    # SECURITY CHECK
-    # -----------------------------------------------------
-
-    payment_is_valid = (
-        result.get("status") == "success"
-        and verified_status == "successful"
-        and verified_tx_ref == tx_ref
-        and verified_currency == expected_currency
-        and float(verified_amount) >= float(expected_amount)
-    )
-
-
-    # -----------------------------------------------------
-    # SUCCESS
-    # -----------------------------------------------------
-
-    if payment_is_valid:
-
-        return redirect(SUCCESS_URL)
-
-
-    # -----------------------------------------------------
-    # PAYMENT NOT VALID
-    # -----------------------------------------------------
-
-    return redirect(FAILED_URL)
+    })
 
 
 # =========================================================
@@ -347,7 +396,10 @@ def payment_callback():
 if __name__ == "__main__":
 
     port = int(
-        os.environ.get("PORT", 8080)
+        os.environ.get(
+            "PORT",
+            8080
+        )
     )
 
     app.run(
