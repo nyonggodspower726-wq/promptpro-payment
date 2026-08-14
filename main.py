@@ -14,16 +14,16 @@ app = Flask(__name__)
 FLW_CLIENT_ID = os.environ.get("FLW_CLIENT_ID")
 FLW_CLIENT_SECRET = os.environ.get("FLW_CLIENT_SECRET")
 
-# Flutterwave Production API
+# Flutterwave V4 Production API
 FLW_API_URL = "https://f4bexperience.flutterwave.com"
 
-# Flutterwave OAuth endpoint
+# Flutterwave V4 OAuth endpoint
 FLW_TOKEN_URL = (
     "https://idp.flutterwave.com/"
     "realms/flutterwave/protocol/openid-connect/token"
 )
 
-# Your GitHub pages
+# GitHub Pages
 SUCCESS_URL = (
     "https://nyonggodspower726-wq.github.io/"
     "promptprohub/success.html"
@@ -44,17 +44,11 @@ token_expires_at = 0
 
 
 def get_access_token():
-    """
-    Automatically obtains a V4 OAuth access token.
-
-    Flutterwave tokens expire after 10 minutes.
-    We request a new token when it is close to expiry.
-    """
 
     global access_token
     global token_expires_at
 
-    # Reuse current token if it has more than 60 seconds left.
+    # Reuse token while it has more than 60 seconds left.
     if (
         access_token
         and time.time() < token_expires_at - 60
@@ -63,18 +57,17 @@ def get_access_token():
 
     if not FLW_CLIENT_ID:
         raise Exception(
-            "FLW_CLIENT_ID is not configured."
+            "FLW_CLIENT_ID is not configured in Railway."
         )
 
     if not FLW_CLIENT_SECRET:
         raise Exception(
-            "FLW_CLIENT_SECRET is not configured."
+            "FLW_CLIENT_SECRET is not configured in Railway."
         )
 
     headers = {
-        "Content-Type": (
+        "Content-Type":
             "application/x-www-form-urlencoded"
-        )
     }
 
     data = {
@@ -90,7 +83,13 @@ def get_access_token():
         timeout=30
     )
 
-    result = response.json()
+    try:
+        result = response.json()
+    except Exception:
+        raise Exception(
+            "Flutterwave authentication returned "
+            "an invalid response."
+        )
 
     if (
         not response.ok
@@ -128,7 +127,7 @@ def add_cors_headers(response):
     response.headers[
         "Access-Control-Allow-Headers"
     ] = "Content-Type"
-
+    
     response.headers[
         "Access-Control-Allow-Methods"
     ] = "GET, POST, OPTIONS"
@@ -145,11 +144,39 @@ def home():
 
     return jsonify({
         "status": "success",
-        "message": (
+        "message":
             "PromptPro Hub V4 payment server "
             "is running."
-        )
     })
+
+
+# =========================================================
+# TEST FLUTTERWAVE AUTHENTICATION
+# =========================================================
+
+@app.route("/test-flutterwave", methods=["GET"])
+def test_flutterwave():
+
+    try:
+
+        token = get_access_token()
+
+        return jsonify({
+            "status": "success",
+            "message":
+                "Flutterwave V4 authentication "
+                "is working.",
+            "token_received": bool(token)
+        })
+
+    except Exception as error:
+
+        return jsonify({
+            "status": "error",
+            "message":
+                "Flutterwave V4 authentication failed.",
+            "details": str(error)
+        }), 500
 
 
 # =========================================================
@@ -179,6 +206,7 @@ def create_payment():
         "customer@promptprohub.com"
     )
 
+
     # =====================================================
     # PRICES
     # =====================================================
@@ -187,28 +215,26 @@ def create_payment():
 
         # REAL ₦100 TEST
         #
-        # After the complete payment system works,
-        # change this to 19999.
+        # After successful testing:
+        # change 100 to 19999.
         amount = 100
 
     elif currency == "USD":
 
-        # NORMAL PRODUCT PRICE
         amount = 14.99
 
     else:
 
         return jsonify({
             "status": "error",
-            "message": (
-                "Only NGN and USD "
-                "payments are supported."
-            )
+            "message":
+                "Only NGN and USD payments "
+                "are supported."
         }), 400
 
 
     # =====================================================
-    # UNIQUE TRANSACTION REFERENCE
+    # UNIQUE REFERENCE
     # =====================================================
 
     reference = (
@@ -220,7 +246,7 @@ def create_payment():
 
 
     # =====================================================
-    # GET V4 ACCESS TOKEN
+    # GET ACCESS TOKEN
     # =====================================================
 
     try:
@@ -236,7 +262,7 @@ def create_payment():
 
 
     # =====================================================
-    # V4 ORCHESTRATOR PAYMENT
+    # V4 ORCHESTRATOR
     # =====================================================
 
     url = (
@@ -245,32 +271,47 @@ def create_payment():
     )
 
     headers = {
-        "Authorization": (
-            f"Bearer {token}"
-        ),
-        "Content-Type": "application/json",
-        "X-Trace-Id": str(uuid.uuid4()),
-        "X-Idempotency-Key": str(uuid.uuid4())
+        "Authorization":
+            f"Bearer {token}",
+
+        "Content-Type":
+            "application/json",
+
+        "X-Trace-Id":
+            str(uuid.uuid4()),
+
+        "X-Idempotency-Key":
+            str(uuid.uuid4())
     }
 
+
+    # =====================================================
+    # CUSTOMER INFORMATION
+    # =====================================================
+
     payload = {
+
         "amount": amount,
 
         "currency": currency,
 
         "reference": reference,
 
+        "redirect_url": SUCCESS_URL,
+
         "customer": {
             "email": email
         },
-
-        "redirect_url": SUCCESS_URL,
 
         "payment_method": {
             "type": "card"
         }
     }
 
+
+    # =====================================================
+    # SEND PAYMENT REQUEST
+    # =====================================================
 
     try:
 
@@ -281,60 +322,106 @@ def create_payment():
             timeout=30
         )
 
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception:
+            result = {
+                "raw_response":
+                    response.text
+            }
 
     except Exception as error:
 
         return jsonify({
             "status": "error",
-            "message": (
+            "message":
                 "Could not connect to "
-                "Flutterwave."
-            ),
+                "Flutterwave.",
             "details": str(error)
         }), 500
 
 
     # =====================================================
-    # CHECK RESPONSE
+    # GET FLUTTERWAVE REDIRECT URL
     # =====================================================
 
     if response.ok:
 
-        next_action = (
-            result
-            .get("data", {})
-            .get("next_action", {})
+        flutter_data = result.get(
+            "data",
+            {}
         )
 
-        redirect_url = (
-            next_action.get(
-                "redirect_url"
+        next_action = flutter_data.get(
+            "next_action",
+            {}
+        )
+
+        redirect_data = next_action.get(
+            "redirect_url",
+            {}
+        )
+
+
+        # V4 returns:
+        #
+        # data
+        #   └── next_action
+        #        └── redirect_url
+        #             └── url
+
+        if isinstance(
+            redirect_data,
+            dict
+        ):
+
+            payment_url = redirect_data.get(
+                "url"
             )
-        )
 
-        if redirect_url:
+        else:
+
+            payment_url = redirect_data
+
+
+        if payment_url:
 
             return jsonify({
+
                 "status": "success",
-                "payment_url": redirect_url,
-                "reference": reference,
-                "currency": currency,
-                "amount": amount
+
+                "payment_url":
+                    payment_url,
+
+                "reference":
+                    reference,
+
+                "currency":
+                    currency,
+
+                "amount":
+                    amount
             })
 
 
     # =====================================================
-    # ERROR
+    # FLUTTERWAVE ERROR
     # =====================================================
 
     return jsonify({
+
         "status": "error",
-        "message": (
+
+        "message":
             "Flutterwave could not "
-            "start the payment."
-        ),
-        "flutterwave_response": result
+            "start the payment.",
+
+        "http_status":
+            response.status_code,
+
+        "flutterwave_response":
+            result
+
     }), 400
 
 
@@ -356,36 +443,25 @@ def payment_status():
 
         return jsonify({
             "status": "error",
-            "message": (
+            "message":
                 "Payment reference is required."
-            )
         }), 400
 
 
-    try:
-
-        token = get_access_token()
-
-    except Exception as error:
-
-        return jsonify({
-            "status": "error",
-            "message": str(error)
-        }), 500
-
-
-    # This endpoint will be connected to
-    # Flutterwave's transaction verification
-    # after we confirm the exact production
-    # response returned by your account.
+    # We will complete the V4 verification
+    # after confirming the exact charge response
+    # from your live Flutterwave account.
 
     return jsonify({
+
         "status": "pending",
-        "reference": reference,
-        "message": (
+
+        "reference":
+            reference,
+
+        "message":
             "Payment verification endpoint "
             "is ready."
-        )
     })
 
 
