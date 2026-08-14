@@ -1,5 +1,4 @@
 import os
-import uuid
 import requests
 
 from flask import Flask, request, jsonify, redirect
@@ -7,14 +6,22 @@ from flask import Flask, request, jsonify, redirect
 app = Flask(__name__)
 
 # =========================================================
-# FLUTTERWAVE STANDARD HOSTED CHECKOUT
+# FLUTTERWAVE
 # =========================================================
 
 FLW_SECRET_KEY = os.environ.get("FLW_SECRET_KEY")
-
-FLW_API_URL = "https://api.flutterwave.com/v3/payments"
+FLW_WEBHOOK_SECRET = os.environ.get("FLW_WEBHOOK_SECRET")
 
 FLW_VERIFY_URL = "https://api.flutterwave.com/v3/transactions"
+
+
+# =========================================================
+# YOUR EXISTING FLUTTERWAVE PAYMENT LINKS
+# =========================================================
+
+USD_PAYMENT_LINK = "https://flutterwave.com/pay/mcwzznhuu0lo"
+
+NGN_PAYMENT_LINK = "https://flutterwave.com/pay/fola86ilb2da"
 
 
 # =========================================================
@@ -36,7 +43,21 @@ FAILED_URL = (
 # PRODUCT
 # =========================================================
 
-PRODUCT_NAME = "PromptPro Hub - The Ultimate AI Business Toolkit"
+PRODUCT_NAME = (
+    "PromptPro Hub - The Ultimate AI Business Toolkit"
+)
+
+
+# =========================================================
+# PRICES
+# =========================================================
+
+NGN_TEST_AMOUNT = 100
+
+# After the ₦100 test works, change 100 to 19999.
+NGN_FINAL_AMOUNT = 19999
+
+USD_AMOUNT = 14.99
 
 
 # =========================================================
@@ -68,290 +89,81 @@ def home():
 
     return jsonify({
         "status": "success",
-        "message": "PromptPro Hub hosted payment server is running.",
-        "payment_system": "Flutterwave Standard Hosted Checkout"
+        "message": (
+            "PromptPro Hub automatic payment "
+            "server is running."
+        ),
+        "payment_system": (
+            "Flutterwave Payment Links + Webhook"
+        )
     })
 
 
 # =========================================================
 # CREATE PAYMENT
+#
+# IMPORTANT:
+# We are NOT creating a new Flutterwave payment here.
+#
+# We simply return the payment link you already created
+# in your Flutterwave dashboard.
 # =========================================================
 
 @app.route("/create-payment", methods=["POST"])
 def create_payment():
 
-    # -----------------------------------------------------
-    # Check secret key
-    # -----------------------------------------------------
-
-    if not FLW_SECRET_KEY:
-
-        return jsonify({
-            "status": "error",
-            "message": (
-                "FLW_SECRET_KEY is not configured "
-                "in Railway Variables."
-            )
-        }), 500
-
-
-    # -----------------------------------------------------
-    # Read request
-    # -----------------------------------------------------
-
     data = request.get_json(silent=True) or {}
-
 
     currency = str(
         data.get("currency", "NGN")
     ).upper()
 
 
-    email = str(
-        data.get(
-            "email",
-            "customer@promptprohub.com"
-        )
-    ).strip()
-
-
-    name = str(
-        data.get(
-            "name",
-            "PromptPro Hub Customer"
-        )
-    ).strip()
-
-
     # -----------------------------------------------------
-    # PAYMENT AMOUNT
+    # NAIRA
     # -----------------------------------------------------
 
     if currency == "NGN":
 
-        # ₦100 TEST PRICE
-        #
-        # AFTER TESTING:
-        # CHANGE 100 TO 19999
-
-        amount = 100
-
-
-    elif currency == "USD":
-
-        amount = 14.99
+        return jsonify({
+            "status": "success",
+            "payment_url": NGN_PAYMENT_LINK,
+            "currency": "NGN",
+            "amount": NGN_TEST_AMOUNT
+        })
 
 
-    else:
+    # -----------------------------------------------------
+    # USD
+    # -----------------------------------------------------
+
+    if currency == "USD":
 
         return jsonify({
-            "status": "error",
-            "message": (
-                "Only NGN and USD "
-                "payments are supported."
-            )
-        }), 400
+            "status": "success",
+            "payment_url": USD_PAYMENT_LINK,
+            "currency": "USD",
+            "amount": USD_AMOUNT
+        })
 
 
     # -----------------------------------------------------
-    # UNIQUE TRANSACTION REFERENCE
-    # -----------------------------------------------------
-
-    tx_ref = (
-        "PROMPTPRO-"
-        + currency
-        + "-"
-        + uuid.uuid4().hex[:20]
-    )
-
-
-    # -----------------------------------------------------
-    # FLUTTERWAVE STANDARD PAYMENT
-    # -----------------------------------------------------
-
-    payload = {
-
-        "tx_ref": tx_ref,
-
-        "amount": amount,
-
-        "currency": currency,
-
-        # Flutterwave will redirect here AFTER payment.
-        #
-        # Railway verifies the transaction first,
-        # then sends the customer to your GitHub page.
-
-        "redirect_url": (
-            "https://promptpro-payment-production-f97b"
-            ".up.railway.app/payment-callback"
-        ),
-
-        "customer": {
-
-            "email": email,
-
-            "name": name
-
-        },
-
-        "customizations": {
-
-            "title": PRODUCT_NAME,
-
-            "description": (
-                "Premium AI prompts, "
-                "business templates and "
-                "bonus resources."
-            )
-
-        },
-
-        "payment_options": (
-            "card,banktransfer,ussd"
-        ),
-
-        "configurations": {
-
-            "session_duration": 30,
-
-            "max_retry_attempt": 5
-
-        },
-
-        "meta": {
-
-            "product": "PromptPro Hub",
-
-            "product_type": "digital_product",
-
-            "currency": currency,
-
-            "amount": amount
-
-        }
-
-    }
-
-
-    # -----------------------------------------------------
-    # SEND TO FLUTTERWAVE
-    # -----------------------------------------------------
-
-    headers = {
-
-        "Authorization": (
-            "Bearer "
-            + FLW_SECRET_KEY
-        ),
-
-        "Content-Type": "application/json"
-
-    }
-
-
-    try:
-
-        response = requests.post(
-
-            FLW_API_URL,
-
-            headers=headers,
-
-            json=payload,
-
-            timeout=30
-
-        )
-
-    except Exception as error:
-
-        return jsonify({
-
-            "status": "error",
-
-            "message": (
-                "Could not connect to Flutterwave."
-            ),
-
-            "details": str(error)
-
-        }), 500
-
-
-    # -----------------------------------------------------
-    # READ FLUTTERWAVE RESPONSE
-    # -----------------------------------------------------
-
-    try:
-
-        result = response.json()
-
-    except Exception:
-
-        result = {
-
-            "raw_response":
-                response.text
-
-        }
-
-
-    # -----------------------------------------------------
-    # SUCCESS
-    # -----------------------------------------------------
-
-    if (
-        response.ok
-        and result.get("status") == "success"
-    ):
-
-        payment_url = (
-            result
-            .get("data", {})
-            .get("link")
-        )
-
-
-        if payment_url:
-
-            return jsonify({
-
-                "status": "success",
-
-                "payment_url": payment_url,
-
-                "tx_ref": tx_ref,
-
-                "currency": currency,
-
-                "amount": amount
-
-            })
-
-
-    # -----------------------------------------------------
-    # FLUTTERWAVE ERROR
+    # INVALID CURRENCY
     # -----------------------------------------------------
 
     return jsonify({
-
         "status": "error",
-
         "message": (
-            "Flutterwave could not create "
-            "the hosted payment."
-        ),
-
-        "http_status": response.status_code,
-
-        "flutterwave_response": result
-
+            "Only NGN and USD payments are supported."
+        )
     }), 400
 
 
 # =========================================================
 # PAYMENT CALLBACK
+#
+# This handles customers returning from a Flutterwave
+# Standard payment flow.
 # =========================================================
 
 @app.route("/payment-callback", methods=["GET"])
@@ -372,7 +184,9 @@ def payment_callback():
 
     if not transaction_id:
 
-        return redirect(FAILED_URL)
+        return redirect(
+            FAILED_URL
+        )
 
 
     # -----------------------------------------------------
@@ -389,12 +203,317 @@ def payment_callback():
 
 
     # -----------------------------------------------------
-    # Verify transaction server-side
+    # Verify payment
     # -----------------------------------------------------
+
+    verified = verify_transaction(
+        transaction_id
+    )
+
+
+    if not verified:
+
+        return redirect(
+            FAILED_URL
+            + "?tx_ref="
+            + str(tx_ref or "")
+        )
+
+
+    transaction = verified
+
+
+    # -----------------------------------------------------
+    # Check transaction
+    # -----------------------------------------------------
+
+    if not payment_is_valid(
+        transaction,
+        tx_ref
+    ):
+
+        return redirect(
+            FAILED_URL
+            + "?tx_ref="
+            + str(tx_ref or "")
+        )
+
+
+    # -----------------------------------------------------
+    # SUCCESS
+    # -----------------------------------------------------
+
+    return redirect(
+        SUCCESS_URL
+        + "?tx_ref="
+        + str(tx_ref)
+        + "&transaction_id="
+        + str(transaction_id)
+    )
+
+
+# =========================================================
+# FLUTTERWAVE WEBHOOK
+#
+# Flutterwave sends POST notifications here after payment.
+# =========================================================
+
+@app.route(
+    "/flutterwave-webhook",
+    methods=["POST"]
+)
+def flutterwave_webhook():
+
+    # -----------------------------------------------------
+    # Verify webhook secret hash
+    #
+    # Your dashboard is currently configured under
+    # V3 Live Webhooks, so Flutterwave sends the secret
+    # hash in the "verif-hash" header.
+    # -----------------------------------------------------
+
+    incoming_hash = request.headers.get(
+        "verif-hash"
+    )
+
+
+    if not FLW_WEBHOOK_SECRET:
+
+        print(
+            "ERROR: FLW_WEBHOOK_SECRET "
+            "is not configured."
+        )
+
+        return jsonify({
+            "status": "error"
+        }), 500
+
+
+    if (
+        not incoming_hash
+        or incoming_hash != FLW_WEBHOOK_SECRET
+    ):
+
+        print(
+            "Rejected webhook: invalid secret hash."
+        )
+
+        return jsonify({
+            "status": "error",
+            "message": "Invalid webhook signature."
+        }), 401
+
+
+    # -----------------------------------------------------
+    # Read webhook payload
+    # -----------------------------------------------------
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+
+    print(
+        "Flutterwave webhook received:"
+    )
+
+    print(payload)
+
+
+    # -----------------------------------------------------
+    # Get event
+    # -----------------------------------------------------
+
+    event = payload.get(
+        "event"
+    )
+
+
+    # -----------------------------------------------------
+    # We care about completed charges
+    # -----------------------------------------------------
+
+    if event != "charge.completed":
+
+        return jsonify({
+            "status": "received",
+            "message": (
+                "Event received but no payment "
+                "processing was required."
+            )
+        }), 200
+
+
+    # -----------------------------------------------------
+    # Transaction data
+    # -----------------------------------------------------
+
+    transaction = payload.get(
+        "data",
+        {}
+    )
+
+
+    transaction_id = transaction.get(
+        "id"
+    )
+
+    tx_ref = transaction.get(
+        "tx_ref"
+    )
+
+    transaction_status = str(
+        transaction.get(
+            "status",
+            ""
+        )
+    ).lower()
+
+
+    # -----------------------------------------------------
+    # Ignore unsuccessful transactions
+    # -----------------------------------------------------
+
+    if transaction_status != "successful":
+
+        print(
+            "Webhook payment was not successful."
+        )
+
+        return jsonify({
+            "status": "received"
+        }), 200
+
+
+    # -----------------------------------------------------
+    # Verify transaction directly with Flutterwave
+    # -----------------------------------------------------
+
+    if not transaction_id:
+
+        print(
+            "Webhook did not contain transaction ID."
+        )
+
+        return jsonify({
+            "status": "received"
+        }), 200
+
+
+    verified = verify_transaction(
+        transaction_id
+    )
+
+
+    if not verified:
+
+        print(
+            "Transaction verification failed."
+        )
+
+        return jsonify({
+            "status": "received"
+        }), 200
+
+
+    # -----------------------------------------------------
+    # Validate payment
+    # -----------------------------------------------------
+
+    if not payment_is_valid(
+        verified,
+        tx_ref
+    ):
+
+        print(
+            "Webhook payment failed validation."
+        )
+
+        return jsonify({
+            "status": "received"
+        }), 200
+
+
+    # -----------------------------------------------------
+    # CUSTOMER INFORMATION
+    # -----------------------------------------------------
+
+    customer = verified.get(
+        "customer",
+        {}
+    )
+
+
+    customer_email = customer.get(
+        "email"
+    )
+
+    customer_name = customer.get(
+        "name",
+        "PromptPro Hub Customer"
+    )
+
+
+    print(
+        "VALID PAYMENT RECEIVED"
+    )
+
+    print(
+        "Customer:",
+        customer_name
+    )
+
+    print(
+        "Email:",
+        customer_email
+    )
+
+    print(
+        "Transaction:",
+        transaction_id
+    )
+
+    print(
+        "Reference:",
+        tx_ref
+    )
+
+
+    # -----------------------------------------------------
+    # IMPORTANT
+    #
+    # We are NOT sending the ebook email yet.
+    #
+    # First we confirm that the webhook + payment
+    # verification works correctly.
+    #
+    # The next step will connect the email delivery.
+    # -----------------------------------------------------
+
+    return jsonify({
+        "status": "success",
+        "message": (
+            "Payment received and verified."
+        ),
+        "transaction_id": transaction_id,
+        "tx_ref": tx_ref,
+        "customer_email": customer_email
+    }), 200
+
+
+# =========================================================
+# VERIFY TRANSACTION
+# =========================================================
+
+def verify_transaction(transaction_id):
 
     if not FLW_SECRET_KEY:
 
-        return redirect(FAILED_URL)
+        print(
+            "ERROR: FLW_SECRET_KEY is missing."
+        )
+
+        return None
 
 
     verify_url = (
@@ -412,7 +531,8 @@ def payment_callback():
             + FLW_SECRET_KEY
         ),
 
-        "Content-Type": "application/json"
+        "Content-Type":
+            "application/json"
 
     }
 
@@ -429,29 +549,67 @@ def payment_callback():
 
         )
 
+
         result = response.json()
 
-    except Exception:
 
-        return redirect(FAILED_URL)
+    except Exception as error:
+
+        print(
+            "Verification error:",
+            error
+        )
+
+        return None
 
 
-    # -----------------------------------------------------
-    # Extract transaction
-    # -----------------------------------------------------
+    if not response.ok:
 
-    transaction = result.get(
+        print(
+            "Flutterwave verification failed:"
+        )
+
+        print(result)
+
+        return None
+
+
+    if result.get("status") != "success":
+
+        print(
+            "Flutterwave returned unsuccessful "
+            "verification:"
+        )
+
+        print(result)
+
+        return None
+
+
+    return result.get(
         "data",
         {}
     )
 
 
-    transaction_status = transaction.get(
-        "status"
-    )
+# =========================================================
+# VALIDATE PAYMENT
+# =========================================================
+
+def payment_is_valid(
+    transaction,
+    tx_ref=None
+):
+
+    transaction_status = str(
+        transaction.get(
+            "status",
+            ""
+        )
+    ).lower()
 
 
-    transaction_currency = str(
+    currency = str(
         transaction.get(
             "currency",
             ""
@@ -459,7 +617,7 @@ def payment_callback():
     ).upper()
 
 
-    transaction_amount = float(
+    amount = float(
         transaction.get(
             "amount",
             0
@@ -468,91 +626,97 @@ def payment_callback():
 
 
     # -----------------------------------------------------
-    # EXPECTED AMOUNT
+    # Status
     # -----------------------------------------------------
 
-    if transaction_currency == "NGN":
+    if transaction_status != "successful":
 
-        expected_amount = 100
+        print(
+            "Invalid transaction status:",
+            transaction_status
+        )
 
-        # AFTER TESTING CHANGE TO:
-        # expected_amount = 19999
+        return False
 
 
-    elif transaction_currency == "USD":
+    # -----------------------------------------------------
+    # Currency + expected amount
+    # -----------------------------------------------------
 
-        expected_amount = 14.99
+    if currency == "NGN":
+
+        expected_amount = NGN_TEST_AMOUNT
+
+
+    elif currency == "USD":
+
+        expected_amount = USD_AMOUNT
 
 
     else:
 
-        return redirect(FAILED_URL)
-
-
-    # -----------------------------------------------------
-    # VERIFY EVERYTHING
-    # -----------------------------------------------------
-
-    amount_is_correct = (
-        transaction_amount
-        >= expected_amount
-    )
-
-
-    status_is_correct = (
-        transaction_status
-        == "successful"
-    )
-
-
-    reference_is_correct = (
-        tx_ref
-        and transaction.get("tx_ref") == tx_ref
-    )
-
-
-    # -----------------------------------------------------
-    # PAYMENT SUCCESSFUL
-    # -----------------------------------------------------
-
-    if (
-        status_is_correct
-        and amount_is_correct
-        and reference_is_correct
-    ):
-
-        return redirect(
-
-            SUCCESS_URL
-            + "?tx_ref="
-            + str(tx_ref)
-            + "&transaction_id="
-            + str(transaction_id)
-
+        print(
+            "Unsupported currency:",
+            currency
         )
 
+        return False
+
 
     # -----------------------------------------------------
-    # PAYMENT FAILED / INVALID
+    # Amount
     # -----------------------------------------------------
 
-    return redirect(
+    if amount < expected_amount:
 
-        FAILED_URL
-        + "?tx_ref="
-        + str(tx_ref or "")
+        print(
+            "Incorrect payment amount.",
+            "Received:",
+            amount,
+            "Expected:",
+            expected_amount
+        )
 
-    )
+        return False
+
+
+    # -----------------------------------------------------
+    # Reference
+    #
+    # Only compare when a reference was supplied.
+    # -----------------------------------------------------
+
+    if tx_ref:
+
+        returned_reference = transaction.get(
+            "tx_ref"
+        )
+
+        if returned_reference != tx_ref:
+
+            print(
+                "Transaction reference mismatch."
+            )
+
+            return False
+
+
+    return True
 
 
 # =========================================================
 # PAYMENT STATUS
 # =========================================================
 
-@app.route("/payment-status", methods=["GET"])
+@app.route(
+    "/payment-status",
+    methods=["GET"]
+)
 def payment_status():
 
-    tx_ref = request.args.get("tx_ref")
+    tx_ref = request.args.get(
+        "tx_ref"
+    )
 
 
     if not tx_ref:
@@ -561,9 +725,8 @@ def payment_status():
 
             "status": "error",
 
-            "message": (
+            "message":
                 "tx_ref is required."
-            )
 
         }), 400
 
@@ -574,10 +737,9 @@ def payment_status():
 
         "tx_ref": tx_ref,
 
-        "message": (
+        "message":
             "Transaction status endpoint "
             "is available."
-        )
 
     })
 
@@ -602,4 +764,4 @@ if __name__ == "__main__":
 
         port=port
 
-    )
+        )
